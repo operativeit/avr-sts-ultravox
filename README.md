@@ -89,7 +89,7 @@ You can customize the application behavior using the following environment varia
 
 - `ULTRAVOX_API_KEY`: Your Ultravox API key (required)
 - `ULTRAVOX_AGENT_ID`: Your Ultravox Agent ID (required)
-- `PORT`: The port on which the server will listen (default: 6030)
+- `PORT`: The port on which the server will listen (default: 6031)
 
 ## Error Handling
 
