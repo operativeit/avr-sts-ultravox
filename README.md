@@ -67,13 +67,13 @@ The **Agent Voice Response** system integrates with Ultravox's Real-time Speech-
 
 The application includes two main audio processing functions:
 
-1. **Upsampling (8kHz to 24kHz)**:
-   - Converts client audio from 8kHz to 24kHz using linear interpolation
-   - Required for Ultravox's API which expects 24kHz input
+1. **Upsampling (8kHz to 48kHz)**:
+   - Converts client audio from 8kHz to 48kHz using linear interpolation
+   - Required for Ultravox's API which expects 48kHz input
 
 2. **Downsampling (24kHz to 8kHz)**:
-   - Converts Ultravox's 24kHz output back to 8kHz
-   - Ensures compatibility with client audio systems
+   - Converts Ultravox's 48kHz output back to 8kHz
+   - Ensures compatibility with client audio systems (Asterisk AudioSocket Module)
 
 ## API Endpoints
 
@@ -89,7 +89,7 @@ You can customize the application behavior using the following environment varia
 
 - `ULTRAVOX_API_KEY`: Your Ultravox API key (required)
 - `ULTRAVOX_AGENT_ID`: Your Ultravox Agent ID (required)
-- `PORT`: The port on which the server will listen (default: 6030)
+- `PORT`: The port on which the server will listen (default: 6031)
 
 ## Error Handling
 

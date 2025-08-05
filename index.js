@@ -1,7 +1,6 @@
 const express = require("express");
 const axios = require("axios");
 const WebSocket = require("ws");
-const { AudioResampler } = require("avr-resampler");
 require("dotenv").config();
 
 // Initialize Express application
@@ -12,18 +11,22 @@ if (!process.env.ULTRAVOX_AGENT_ID) {
 }
 
 // Get the configurable Ultravox sample rate
-const ULTRAVOX_SAMPLE_RATE = parseInt(process.env.ULTRAVOX_SAMPLE_RATE) || 48000;
+const ULTRAVOX_SAMPLE_RATE = 8000;
 const ULTRAVOX_API_URL = `https://api.ultravox.ai/api/agents/${process.env.ULTRAVOX_AGENT_ID}/calls`;
-const ULTRAVOX_CLIENT_BUFFER_SIZE_MS = process.env.ULTRAVOX_CLIENT_BUFFER_SIZE_MS || 60;
-
-const resampler = new AudioResampler(ULTRAVOX_SAMPLE_RATE);
+const ULTRAVOX_CLIENT_BUFFER_SIZE_MS =
+  process.env.ULTRAVOX_CLIENT_BUFFER_SIZE_MS || 60;
 
 /**
  * Connects to Ultravox API and returns an open WebSocket connection
  * @returns {Promise<WebSocket>} The WebSocket connection to Ultravox
  */
 async function connectToUltravox() {
-  console.log("Connecting to Ultravox API", ULTRAVOX_API_URL);
+  console.log(
+    "Connecting to Ultravox API",
+    ULTRAVOX_API_URL,
+    ULTRAVOX_SAMPLE_RATE,
+    ULTRAVOX_CLIENT_BUFFER_SIZE_MS
+  );
   const response = await axios.post(
     ULTRAVOX_API_URL,
     {
@@ -59,52 +62,69 @@ async function connectToUltravox() {
  * @param {Response} res - Express response object
  */
 const handleAudioStream = async (req, res) => {
-  res.setHeader("Content-Type", "application/octet-stream");
-
   const ultravoxWebSocket = await connectToUltravox();
 
   ultravoxWebSocket.on("open", () => {
     console.log("WebSocket connected to Ultravox");
   });
 
+  let ultravoxChunksQueue = Buffer.alloc(0);
+  let isFirstUltravoxChunk = true;
+  let ultravoxStartTime = null;
+
+
   ultravoxWebSocket.on("message", async (data, isBinary) => {
     if (isBinary) {
       // Handle binary audio data from Ultravox
-      const convertedAudio = await resampler.handleDownsampleChunk(data);
-      for (const chunk of convertedAudio) {
-        res.write(chunk);
+      if (isFirstUltravoxChunk) {
+        ultravoxStartTime = Date.now();
+        isFirstUltravoxChunk = false;
+        console.log("First Ultravox audio chunk received, starting delay...");
+      }
+
+      // Add Ultravox chunk to buffer
+      ultravoxChunksQueue = Buffer.concat([ultravoxChunksQueue, data]);
+
+      // If we have accumulated enough time, write the buffer
+      if (ultravoxStartTime && Date.now() - ultravoxStartTime >= 100) {
+        // Create a copy of the current buffer and reset the original
+        const bufferToWrite = ultravoxChunksQueue;
+        ultravoxChunksQueue = Buffer.alloc(0);
+        
+        // Write the buffer to the response
+        res.write(bufferToWrite);
       }
     } else {
       // Handle JSON control messages from Ultravox
       const message = JSON.parse(data.toString());
-      
+
       switch (message.type) {
         case "call_started":
           console.log("Call started", message.callId);
           break;
-          
+
         case "state":
           console.log("State", message.state);
           break;
-          
+
         case "transcript":
           if (message.final) {
-            console.log(`${message.role.toUpperCase()} (${message.medium}): ${message.text}`);
+            console.log(
+              `${message.role.toUpperCase()} (${message.medium}): ${
+                message.text
+              }`
+            );
           }
           break;
-          
+
         case "playback_clear_buffer":
           console.log("Playback clear buffer");
-          const convertedAudio = await resampler.flushDownsampleRemainder();
-          for (const chunk of convertedAudio) {
-            res.write(chunk);
-          }
           break;
-          
+
         case "error":
           console.error("Error", message);
           break;
-          
+
         default:
           console.log("Received message type:", message.type);
           break;
@@ -125,10 +145,7 @@ const handleAudioStream = async (req, res) => {
   // Handle incoming audio data from client
   req.on("data", async (audioChunk) => {
     if (ultravoxWebSocket.readyState === ultravoxWebSocket.OPEN) {
-      const convertedAudio = await resampler.handleUpsampleChunk(audioChunk);
-      if (convertedAudio) {
-        ultravoxWebSocket.send(convertedAudio);
-      }
+      ultravoxWebSocket.send(audioChunk);
     }
   });
 
@@ -139,6 +156,7 @@ const handleAudioStream = async (req, res) => {
 
   req.on("error", (err) => {
     console.error("Request error:", err);
+    clearInterval(interval);
     ultravoxWebSocket.close();
   });
 };
@@ -149,5 +167,4 @@ app.post("/speech-to-speech-stream", handleAudioStream);
 const PORT = process.env.PORT || 6031;
 app.listen(PORT, async () => {
   console.log(`Ultravox Speech-to-Speech server running on port ${PORT}`);
-  await resampler.initialize();
 });
