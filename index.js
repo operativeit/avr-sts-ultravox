@@ -36,13 +36,6 @@ async function setupUltravox() {
 
   const tools = loadTools();
 
-  console.log(
-    "Connecting to Ultravox API",
-    `${ULTRAVOX_API_BASE_URL}`,
-    ULTRAVOX_SAMPLE_RATE,
-    ULTRAVOX_CLIENT_BUFFER_SIZE_MS
-  );
-
   try {
     const response = await axios.get(
       `${ULTRAVOX_API_BASE_URL}/agents/${process.env.ULTRAVOX_AGENT_ID}`,
@@ -90,7 +83,7 @@ async function connectToUltravox(uuid) {
       .join("\n");
 
     const templateContext = Object.fromEntries(
-      Object.entries(fullContext).map(([key, properties]) => [
+      Object.entries(context).map(([key, properties]) => [
         key,
         properties.value
       ]));
