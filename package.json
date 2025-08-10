@@ -1,6 +1,6 @@
 {
   "name": "avr-sts-ultravox",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "Agent Voice Response <info@agentvoiceresponse.com>",
   "description": "OpenAI Speech-to-Speech service for Agent Voice Response",
   "main": "index.js",
@@ -24,6 +24,11 @@
       "name": "Giuseppe Careri",
       "email": "info@gcareri.com",
       "url": "https://github.com/gcareri"
+    },
+    {
+      "name": "Sebastien Cramatte",
+      "email": "oss@operativeit.es",
+      "url": "https://github.com/operativeit"
     }
   ]
 }
