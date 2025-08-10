@@ -37,6 +37,10 @@ Create a `.env` file in the root of the project to store your API keys and confi
 ```bash
 ULTRAVOX_API_KEY=your_ultravox_api_key
 ULTRAVOX_AGENT_ID=your_ultravox_agent_id
+ULTRAVOX_AGENT_PROMPT=''
+ULTRAVOX_TEMPLATE_CONTEXT='{
+  "agentName": { "value": "...", "description": "Agent name"},
+}'
 PORT=6031
 ```
 
@@ -74,6 +78,24 @@ The application includes two main audio processing functions:
 2. **Downsampling (24kHz to 8kHz)**:
    - Converts Ultravox's 48kHz output back to 8kHz
    - Ensures compatibility with client audio systems (Asterisk AudioSocket Module)
+
+### Tools support
+
+This release add tool support to avr-sts-ultravox. 
+Tools located into `avr_tools` directory are setup as durable tools and and tools located into `tools` directoy are setup as temporary.
+
+Due to some ultravox api limitation currently you must setup `ULTRAVOX_AGENT_PROMPT` into your environment config file.
+I don't know if it's normal behavior or ultravox api bug, but when you edit an agent via api and bind some temporary tools, you can't edit anymore through the web ui. Moreover passing `selectedTools` property to callTemplate you delete any other properties such voice or prompt.
+
+### Template context
+
+You can setup agent template context into your .env file to use as variable into your prompt
+
+```
+ULTRAVOX_TEMPLATE_CONTEXT='{
+  "agentName": { "value": "...", "description": "Agent name"},
+}'
+```
 
 ## API Endpoints
 

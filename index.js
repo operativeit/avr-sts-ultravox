@@ -1,5 +1,4 @@
-/**
- * index.js
+/** * index.js
  * Entry point for the Ultravox Speech-to-Speech streaming application.
  * This server handles real-time audio streaming between clients and Ultravox's API,
  * performing necessary audio format conversions and WebSocket communication.
@@ -11,6 +10,8 @@
 const express = require("express");
 const axios = require("axios");
 const WebSocket = require("ws");
+const { loadTools, loadDurableTools, getToolHandler } = require("./loadTools");
+
 require("dotenv").config();
 
 // Initialize Express application
@@ -22,49 +23,111 @@ if (!process.env.ULTRAVOX_AGENT_ID) {
 
 // Get the configurable Ultravox sample rate
 const ULTRAVOX_SAMPLE_RATE = 8000;
-const ULTRAVOX_API_URL = `https://api.ultravox.ai/api/agents/${process.env.ULTRAVOX_AGENT_ID}/calls`;
-const ULTRAVOX_CLIENT_BUFFER_SIZE_MS =
-  process.env.ULTRAVOX_CLIENT_BUFFER_SIZE_MS || 60;
+const ULTRAVOX_API_BASE_URL = `https://api.ultravox.ai/api`;
+const ULTRAVOX_CLIENT_BUFFER_SIZE_MS = process.env.ULTRAVOX_CLIENT_BUFFER_SIZE_MS || 60;
+
+
+/**
+ * Connects to Ultravox API and returns an open WebSocket connection
+ * @returns {Promise<WebSocket>} The WebSocket connection to Ultravox
+ */
+async function setupUltravox() {
+  try {
+    const selectedTools = [
+     ...await loadTools(),
+     ...await loadDurableTools(),
+    ];
+
+    console.log(selectedTools);
+
+    const context = JSON.parse(process.env.ULTRAVOX_TEMPLATE_CONTEXT || {} );
+
+    const wrappedContext = "\n\n# VARIABLES\n\n" + Object.entries(context)
+      .map(([key, properties]) => `- **{{${key}}}** ${properties.description}`)
+      .join("\n");
+
+    const response = await axios.get(
+      `${ULTRAVOX_API_BASE_URL}/agents/${process.env.ULTRAVOX_AGENT_ID}`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": process.env.ULTRAVOX_API_KEY,
+        },
+      }
+    );
+    const callTemplate = response.data.callTemplate;
+    callTemplate.selectedTools = selectedTools;
+    callTemplate.systemPrompt = process.env.ULTRAVOX_AGENT_PROMPT + wrappedContext;
+
+    const responsePatch = await axios.patch(
+      `${ULTRAVOX_API_BASE_URL}/agents/${process.env.ULTRAVOX_AGENT_ID}`,
+      {
+        callTemplate
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": process.env.ULTRAVOX_API_KEY,
+        },
+      }
+    );
+
+    console.log(responsePatch.data);
+
+  } catch (error) {
+    console.log(error.response.data);
+  }
+
+}
 
 /**
  * Connects to Ultravox API and returns an open WebSocket connection
  * @returns {Promise<WebSocket>} The WebSocket connection to Ultravox
  */
 async function connectToUltravox(uuid) {
-  console.log(
-    "Connecting to Ultravox API",
-    ULTRAVOX_API_URL,
-    ULTRAVOX_SAMPLE_RATE,
-    ULTRAVOX_CLIENT_BUFFER_SIZE_MS
-  );
-  const response = await axios.post(
-    ULTRAVOX_API_URL,
-    {
-      metadata: {
-        uuid: uuid,
-      },  
-      medium: {
-        serverWebSocket: {
-          inputSampleRate: ULTRAVOX_SAMPLE_RATE,
-          outputSampleRate: ULTRAVOX_SAMPLE_RATE,
-          clientBufferSizeMs: ULTRAVOX_CLIENT_BUFFER_SIZE_MS,
-        },
-      },
-    },
-    {
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": process.env.ULTRAVOX_API_KEY,
-      },
-    }
-  );
+  try {
+    const templateContext = Object.fromEntries(
+      Object.entries(JSON.parse(process.env.ULTRAVOX_TEMPLATE_CONTEXT || {})).map(([key, properties]) => [
+        key,
+        properties.value
+      ]));
 
-  const joinUrl = response.data.joinUrl;
-  if (!joinUrl) {
-    throw new Error("Missing Ultravox joinUrl");
+    const response = await axios.post(
+      `${ULTRAVOX_API_BASE_URL}/agents/${process.env.ULTRAVOX_AGENT_ID}/calls`,
+      {
+        metadata: {
+          uuid: uuid,
+        },
+        medium: {
+          serverWebSocket: {
+            inputSampleRate: ULTRAVOX_SAMPLE_RATE,
+            outputSampleRate: ULTRAVOX_SAMPLE_RATE,
+            clientBufferSizeMs: ULTRAVOX_CLIENT_BUFFER_SIZE_MS,
+          },
+        },
+        templateContext,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": process.env.ULTRAVOX_API_KEY,
+        },
+      }
+    );
+
+    console.log(response.status, response.data.joinUrl)
+
+    const joinUrl = response.data.joinUrl;
+    if (!joinUrl) {
+      throw new Error("Missing Ultravox joinUrl");
+    }
+
+    return new WebSocket(joinUrl);
+
+  } catch (error) {
+    throw new Error(error.response.data);
   }
 
-  return new WebSocket(joinUrl);
 }
 
 /**
@@ -77,7 +140,7 @@ async function connectToUltravox(uuid) {
 const handleAudioStream = async (req, res) => {
   const uuid = req.headers['x-uuid'];
   console.log('Received UUID:', uuid);
-  
+
   const ultravoxWebSocket = await connectToUltravox(uuid);
 
   ultravoxWebSocket.on("open", () => {
@@ -87,7 +150,6 @@ const handleAudioStream = async (req, res) => {
   let ultravoxChunksQueue = Buffer.alloc(0);
   let isFirstUltravoxChunk = true;
   let ultravoxStartTime = null;
-
 
   ultravoxWebSocket.on("message", async (data, isBinary) => {
     if (isBinary) {
@@ -106,7 +168,7 @@ const handleAudioStream = async (req, res) => {
         // Create a copy of the current buffer and reset the original
         const bufferToWrite = ultravoxChunksQueue;
         ultravoxChunksQueue = Buffer.alloc(0);
-        
+
         // Write the buffer to the response
         res.write(bufferToWrite);
       }
@@ -121,6 +183,39 @@ const handleAudioStream = async (req, res) => {
 
         case "state":
           console.log("State", message.state);
+          break;
+
+        case 'client_tool_invocation':
+          console.log(`Tool invocation:`, message.toolName, message.invocationId, message.parameters, uuid);
+
+          try {
+            const handler = await getToolHandler(message.toolName);
+            if (!handler) {
+              console.error(`No handler found for tool: ${message.toolName}`);
+            } else {
+              console.log(
+                `>> Tool call: ${message.toolName}`,
+                uuid,
+                message.parameters
+              );
+
+              const content = await handler(uuid, message.parameters);
+              console.log(`>> Tool response: ${message.toolName} ->`, content);
+
+              res.write(JSON.stringify({ type:
+                "client_tool_result",
+                result: content,
+                invocationId: message.invocationId
+              }));
+
+            }
+          } catch (toolError) {
+            console.error(
+              `[Error executing tool ${message.toolName}:`,
+              toolError
+            );
+          }
+
           break;
 
         case "transcript":
@@ -146,7 +241,7 @@ const handleAudioStream = async (req, res) => {
           break;
       }
     }
-  });
+	  });
 
   ultravoxWebSocket.on("close", () => {
     console.log("WebSocket connection closed");
@@ -176,6 +271,8 @@ const handleAudioStream = async (req, res) => {
     ultravoxWebSocket.close();
   });
 };
+
+setupUltravox();
 
 // Route for speech-to-speech streaming
 app.post("/speech-to-speech-stream", handleAudioStream);

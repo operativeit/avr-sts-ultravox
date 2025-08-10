@@ -20,7 +20,7 @@ jobs:
           uses: martinbeentjes/npm-get-version-action@v1.3.1
         - name: build the docker image
           id: build-docker-image
-          run: docker build -t agentvoiceresponse/avr-sts-ultravox:latest -t agentvoiceresponse/avr-sts-ultravox:${{ steps.package-version.outputs.current-version}} .
+          run: docker build -t operativeit/avr-sts-ultravox:latest -t operativeit/avr-sts-ultravox:${{ steps.package-version.outputs.current-version}} .
         - name: push the docker image
           id: push-docker-image
-          run: docker push agentvoiceresponse/avr-sts-ultravox:latest && docker push agentvoiceresponse/avr-sts-ultravox:${{ steps.package-version.outputs.current-version}}
+          run: docker push operativeit/avr-sts-ultravox:latest && docker push operativeit/avr-sts-ultravox:${{ steps.package-version.outputs.current-version}}
