@@ -130,6 +130,10 @@ All errors are logged to the console and appropriate error messages are returned
 *   **Docker Hub:** [https://hub.docker.com/u/agentvoiceresponse](https://hub.docker.com/u/agentvoiceresponse) - Find Docker images.
 *   **Wiki:** [https://wiki.agentvoiceresponse.com/en/home](https://wiki.agentvoiceresponse.com/en/home) - Project documentation and guides.
 
+## Todo
+- Implement current datetime as templateContext variable
+- Implement support for caller/callee as templateContext variable to identify the call
+
 ## Support AVR
 
 AVR is free and open-source. If you find it valuable, consider supporting its development:
