@@ -8,7 +8,8 @@
     "start": "node .",
     "start:dev": "nodemon --inspect ./index.js",
     "dc:build": "docker build --platform=linux/amd64 -t agentvoiceresponse/avr-sts-ultravox:latest -t agentvoiceresponse/avr-sts-ultravox:${npm_package_version} .",
-    "dc:push": "docker push agentvoiceresponse/avr-sts-ultravox:latest && docker push agentvoiceresponse/avr-sts-ultravox:${npm_package_version}"
+    "dc:push": "docker push agentvoiceresponse/avr-sts-ultravox:latest && docker push agentvoiceresponse/avr-sts-ultravox:${npm_package_version}",
+    "format": "prettier --write '**/*.js'"
   },
   "dependencies": {
     "axios": "^1.8.4",
@@ -17,7 +18,8 @@
     "ws": "^8.18.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.9"
+    "nodemon": "^3.1.9",
+    "prettier": "^3.6.2"
   },
   "contributors": [
     {

@@ -3,23 +3,18 @@ const axios = require('axios');
 module.exports = {
   name: 'avrHangup',
   description: 'Ends the conversation',
-  parameters: [
-  ],
+  parameters: [],
   handler: async (uuid) => {
-    console.log("Hangup call");
+    console.log('Hangup call');
     const url = process.env.AMI_URL || 'http://127.0.0.1:6006';
 
-    console.log(url, uuid)
+    console.log(url, uuid);
     try {
       const res = await axios.post(`${url}/hangup`, { uuid });
-      console.log("Hangup response:", res.data);
-      return {
-        responseText: res.data.message,
-        responseType: "tool-response"
-      };
-
+      console.log('Hangup response:', res.data);
+      return res.data.message;
     } catch (error) {
-      console.error("Error during hangup:", error.message);
+      console.error('Error during hangup:', error.message);
       return `Error during hangup: ${error.message}`;
     }
   },
