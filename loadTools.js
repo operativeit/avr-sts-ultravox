@@ -7,8 +7,12 @@ const ULTRAVOX_API_BASE_URL = `https://api.ultravox.ai/api`;
 
 const loadTools = async (dirPath = path.join(__dirname, 'tools')) => {
   try {
-    await fs.access(dirPath);
+    await fs.access(dirPath, fs.constants.F_OK).catch(() => {
+      throw new Error(`La carpeta no existe: ${dirPath}`);
+    });
+
     const files = await fs.readdir(dirPath);
+
 
     const temporaryTools = files.map((file) => {
       const tool = require(path.join(dirPath, file));
@@ -32,8 +36,7 @@ const loadTools = async (dirPath = path.join(__dirname, 'tools')) => {
 
     return temporaryTools;
   } catch (error) {
-    console.log(error);
-    process.exit(1);
+    console.log(error.message);
     return [];
   }
 };
@@ -44,7 +47,9 @@ const loadDurableTools = async (
   let response, tools, files, url, method;
 
   try {
-    await fs.access(dirPath);
+    await fs.access(dirPath, fs.constants.F_OK).catch(() => {
+      throw new Error(`La carpeta no existe: ${dirPath}`);
+    });
 
     response = await axios.get(`${ULTRAVOX_API_BASE_URL}/tools`, {
       headers: {
@@ -105,7 +110,8 @@ const loadDurableTools = async (
 
     return durableTools;
   } catch (error) {
-    console.error(error);
+    console.error(error.message);
+    return [];
   }
 };
 
