@@ -32,6 +32,13 @@ const AVR_TOOL_EXECUTION_TIMEOUT_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : amiMs + 2000;
 })();
 
+
+const ELOKIA_BASE_URL = process.env.ELOKIA_BASE_URL; 
+if (!ELOKIA_BASE_URL) {
+  throw new Error("ELOKIA_BASE_URL is required");
+}
+
+
 /** Timeout for Ultravox REST `POST …/calls` that returns joinUrl (default 60s). */
 const ULTRAVOX_JOIN_HTTP_TIMEOUT_MS = (() => {
   const raw = parseInt(
@@ -40,6 +47,22 @@ const ULTRAVOX_JOIN_HTTP_TIMEOUT_MS = (() => {
   );
   return Number.isFinite(raw) && raw > 0 ? raw : 60000;
 })();
+
+/**
+ * Map elokia setting to Ultravox
+ * @param
+ * @returns
+ **/
+function mapSettings(payload) {
+  const mapping = {
+    prompt: 'systemPrompt'
+  };
+  return Object.keys(payload).reduce((acc, oldKey) => {
+    const newKey = mapping[oldKey] || oldKey;
+    acc[newKey] = payload[oldKey];
+    return acc;
+  }, {});
+}
 
 /**
  * Maps an OpenAI-style JSON Schema (function parameters) to Ultravox dynamicParameters.
@@ -286,6 +309,31 @@ async function executeToolAndSendUltravoxResult(opts) {
   }
 }
 
+async function getSettings(agentId, callId) {
+
+  try {
+     const response = await axios.get(`${ELOKIA_BASE_URL}/init`, {
+       headers: {
+          "Accept": "application/json",
+          "X-Agent-Id": agentId,
+          "X-Call-Id": callId,
+        }
+      });
+
+      return mapSettings(response.data);
+
+    } catch (error) {
+      if (error.response) {
+        console.error("Error HTTP:", error.response.status);
+        console.error("Detalle:", error.response.data);
+      } else {
+        console.error("Error conectando:", error.message);
+      }
+    }
+
+}
+
+
 // Configuration for call type
 const CALL_TYPE = process.env.ULTRAVOX_CALL_TYPE || 'agent'; // 'agent' or 'generic'
 const ULTRAVOX_AGENT_ID = process.env.ULTRAVOX_AGENT_ID;
@@ -314,7 +362,7 @@ const getApiUrl = () => {
  * @param {string} uuid - The unique identifier for the call
  * @returns {Promise<WebSocket>} The WebSocket connection to Ultravox
  */
-async function connectToUltravox(uuid) {
+async function connectToUltravox(uuid, params) {
   const apiUrl = getApiUrl();
   console.log(
     `Connecting to Ultravox API (${CALL_TYPE} call)`,
@@ -323,7 +371,10 @@ async function connectToUltravox(uuid) {
     ULTRAVOX_CLIENT_BUFFER_SIZE_MS
   );
 
-  // Prepare the request body based on call type
+  console.log(params)
+
+  // Prepare the request body based on call typeo
+
   let requestBody;
   
   if (CALL_TYPE === 'agent') {
@@ -347,11 +398,13 @@ async function connectToUltravox(uuid) {
     }
   } else {
     // Generic call configuration
+
     requestBody = {
       systemPrompt: process.env.ULTRAVOX_SYSTEM_PROMPT || "You are a helpful AI assistant.",
       temperature: parseFloat(process.env.ULTRAVOX_TEMPERATURE) || 0,
       model: process.env.ULTRAVOX_MODEL || "fixie-ai/ultravox",
       voice: process.env.ULTRAVOX_VOICE || "Shaun",
+      ...await getSettings(params.to, uuid),
       metadata: {
         uuid: uuid,
       },
@@ -422,6 +475,13 @@ async function connectToUltravox(uuid) {
       requestBody.selectedTools = selectedFromDisk;
     }
 
+    requestBody.vadSettings = {
+        "frameActivationThreshold": 0.3,
+        "minimumTurnDuration": "0.3s",
+        "minimumInterruptionDuration": "0.15s",
+        "turnEndpointDelay": "0.8s"
+    }
+
     // Add VAD settings if provided
     if (process.env.ULTRAVOX_VAD_SETTINGS) {
       try {
@@ -465,6 +525,7 @@ async function connectToUltravox(uuid) {
 const handleClientConnection = (clientWs) => {
   console.log("New client WebSocket connection received");
   let sessionUuid = null;
+
   let ultravoxWebSocket = null;
 
   let ultravoxStartTime = null;
@@ -476,6 +537,7 @@ const handleClientConnection = (clientWs) => {
       switch (message.type) {
         case "init":
           sessionUuid = message.uuid;
+
           console.log("Session UUID:", sessionUuid);
           // Initialize Ultravox connection when client is ready
           initializeUltravoxConnection();
@@ -523,7 +585,7 @@ const handleClientConnection = (clientWs) => {
   // Initialize Ultravox WebSocket connection
   const initializeUltravoxConnection = async () => {
     try {
-      ultravoxWebSocket = await connectToUltravox(sessionUuid);
+      ultravoxWebSocket = await connectToUltravox(sessionUuid,clientWs.meta);
 
       ultravoxWebSocket.on("open", () => {
         console.log("WebSocket connected to Ultravox");
@@ -686,7 +748,14 @@ const startServer = async () => {
     const PORT = process.env.PORT || 6031;
     const wss = new WebSocket.Server({ port: PORT });
 
-    wss.on("connection", (clientWs) => {
+
+    wss.on("connection", (clientWs, req) => {
+
+      const url = new URL(req.url, `http://${req.headers.host}`)
+      const queryParams = Object.fromEntries(url.searchParams.entries());
+
+      clientWs.meta = queryParams;
+
       console.log("New client connected");
       handleClientConnection(clientWs);
     });
