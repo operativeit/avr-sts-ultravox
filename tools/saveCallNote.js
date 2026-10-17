@@ -2,40 +2,12 @@ require("dotenv").config();
 
 const axios = require("axios");
 
-function resolveRequestHumanCallUrl() {
-  if (process.env.API_HUMAN_CALL_URL) {
-    return process.env.API_HUMAN_CALL_URL.trim();
-  }
-
-  const rawBase = (
-    process.env.API_BASE_URL ||
-    process.env.API_URL ||
-    process.env.AGENT_API_URL ||
-    process.env.ELOKIA_BASE_URL ||
-    ""
-  )
-    .trim()
-    .replace(/\/+$/, "");
-
-  if (!rawBase) return "";
-
-  const endpoint = (
-    process.env.API_HUMAN_CALL_ENDPOINT || "/agent/request-human-call"
-  ).replace(/^\/+/, "");
-
-  // Evita duplicar `/agent` si API_URL ya termina en `/agent` (ej. http://172.30.0.14/agent)
-  if (rawBase.endsWith("/agent") && endpoint.startsWith("agent/")) {
-    return `${rawBase}/${endpoint.slice("agent/".length)}`;
-  }
-
-  return `${rawBase}/${endpoint}`;
+function getBaseUrl() {
+  return (process.env.API_URL || "").trim().replace(/\/+$/, "");
 }
 
 function getCustomHeaders() {
-  const rawHeaders =
-    process.env.API_HEADERS ||
-    process.env.AGENT_API_HEADERS ||
-    process.env.AGENT_CONFIG_HEADERS;
+  const rawHeaders = process.env.API_HEADERS;
   if (!rawHeaders) return {};
   try {
     return JSON.parse(rawHeaders);
@@ -46,14 +18,7 @@ function getCustomHeaders() {
 }
 
 function getTimeoutMs() {
-  const raw = parseInt(
-    process.env.API_TIMEOUT_MS ||
-      process.env.AGENT_API_TIMEOUT_MS ||
-      process.env.AGENT_CONFIG_TIMEOUT_MS ||
-      "10000",
-    10
-  );
-  return Number.isFinite(raw) && raw > 0 ? raw : 10000;
+  return parseInt(process.env.API_TIMEOUT_MS || "10000", 10);
 }
 
 module.exports = {
@@ -120,16 +85,21 @@ module.exports = {
       JSON.stringify(payload, null, 2)
     );
 
-    const url = resolveRequestHumanCallUrl();
-    if (!url) {
+    const baseUrl = getBaseUrl();
+    if (!baseUrl) {
       console.warn(
-        "[saveCallNote] No se encontró API_BASE_URL / API_URL configurada; solo se registró en consola."
+        "[saveCallNote] No se encontró API_URL configurada; solo se registró en consola."
       );
       return {
         ok: true,
         message: "Nota de llamada registrada localmente (sin URL de backend configurada).",
       };
     }
+
+    const endpoint = (
+      process.env.API_HUMAN_CALL_ENDPOINT || "/request-human-call"
+    ).replace(/^\/+/, "");
+    const url = `${baseUrl}/${endpoint}`;
 
     try {
       console.log(`[saveCallNote] Enviando POST a ${url}...`);

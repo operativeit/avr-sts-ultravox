@@ -169,14 +169,7 @@ function enrichPromptWithDateTime(prompt, config = {}, extra = {}) {
 }
 
 function getBaseUrl() {
-  return (
-    process.env.API_URL ||
-    process.env.AGENT_API_URL ||
-    process.env.ELOKIA_BASE_URL ||
-    ""
-  )
-    .trim()
-    .replace(/\/+$/, "");
+  return (process.env.API_URL || "").trim().replace(/\/+$/, "");
 }
 
 function getCustomHeaders() {
