@@ -18,25 +18,33 @@ module.exports = {
     required: [],
   },
   handler: async (uuid, {}) => {
-    console.log("Hangup call");
+    console.log("Hangup call scheduled for UUID:", uuid);
     const url = process.env.AMI_URL || "http://127.0.0.1:6006";
     const timeout = amiRequestTimeoutMs();
-    try {
-      const res = await axios.post(`${url}/hangup`, { uuid }, { timeout });
-      console.log("Hangup response:", res.data);
-      if (typeof res.data?.message !== "undefined") return res.data.message;
-      return "OK";
-    } catch (error) {
-      const msg =
-        error?.code === "ECONNABORTED"
-          ? `AMI hangup timed out after ${timeout}ms`
-          : typeof axios.isAxiosError === "function" && axios.isAxiosError(error)
-            ? error.response?.data?.message || error.message
-            : error instanceof Error
-              ? error.message
-              : String(error);
-      console.error("Error during hangup:", msg);
-      throw new Error(msg);
-    }
+    const delayMs = parseInt(process.env.AVR_HANGUP_DELAY_MS || "4000", 10);
+
+    setTimeout(async () => {
+      try {
+        console.log("Executing AMI hangup for UUID:", uuid);
+        const res = await axios.post(`${url}/hangup`, { uuid }, { timeout });
+        console.log("Hangup response:", res.data);
+      } catch (error) {
+        const msg =
+          error?.code === "ECONNABORTED"
+            ? `AMI hangup timed out after ${timeout}ms`
+            : typeof axios.isAxiosError === "function" &&
+                axios.isAxiosError(error)
+              ? error.response?.data?.message || error.message
+              : error instanceof Error
+                ? error.message
+                : String(error);
+        console.error("Error during hangup:", msg);
+      }
+    }, Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : 4000);
+
+    return {
+      result: "Call hangup initiated.",
+      agentReaction: "listens",
+    };
   },
 };

@@ -20,6 +20,11 @@
 const WebSocket = require("ws");
 const axios = require("axios");
 const { loadTools, getToolHandler } = require("./loadTools");
+const {
+  getConfig,
+  syncMemory,
+  enrichPromptWithDateTime,
+} = require("./configProvider");
 
 require("dotenv").config();
 
@@ -32,13 +37,6 @@ const AVR_TOOL_EXECUTION_TIMEOUT_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : amiMs + 2000;
 })();
 
-
-const ELOKIA_BASE_URL = process.env.ELOKIA_BASE_URL; 
-if (!ELOKIA_BASE_URL) {
-  throw new Error("ELOKIA_BASE_URL is required");
-}
-
-
 /** Timeout for Ultravox REST `POST …/calls` that returns joinUrl (default 60s). */
 const ULTRAVOX_JOIN_HTTP_TIMEOUT_MS = (() => {
   const raw = parseInt(
@@ -47,22 +45,6 @@ const ULTRAVOX_JOIN_HTTP_TIMEOUT_MS = (() => {
   );
   return Number.isFinite(raw) && raw > 0 ? raw : 60000;
 })();
-
-/**
- * Map elokia setting to Ultravox
- * @param
- * @returns
- **/
-function mapSettings(payload) {
-  const mapping = {
-    prompt: 'systemPrompt'
-  };
-  return Object.keys(payload).reduce((acc, oldKey) => {
-    const newKey = mapping[oldKey] || oldKey;
-    acc[newKey] = payload[oldKey];
-    return acc;
-  }, {});
-}
 
 /**
  * Maps an OpenAI-style JSON Schema (function parameters) to Ultravox dynamicParameters.
@@ -169,7 +151,12 @@ function buildUltravoxToolResultPayload(message) {
     return payload;
   }
 
-  if (message.result !== undefined) payload.result = message.result;
+  if (message.result !== undefined) {
+    payload.result =
+      typeof message.result === "string"
+        ? message.result
+        : JSON.stringify(message.result);
+  }
   if (message.responseType != null) payload.responseType = message.responseType;
   if (message.agentReaction != null) payload.agentReaction = message.agentReaction;
   if (message.updateCallState !== undefined)
@@ -233,6 +220,46 @@ function sendClientJson(clientWs, payload) {
 }
 
 /**
+ * Intenta parsear el resultado de la herramienta de forma segura.
+ * @param {unknown} res
+ * @returns {Record<string, unknown>|null}
+ */
+function parseToolResult(res) {
+  if (res && typeof res === "object" && !Array.isArray(res)) return res;
+  if (typeof res === "string") {
+    try {
+      const parsed = JSON.parse(res);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extrae el body de configuración del nuevo stage y lo serializa a JSON string
+ * como exige el protocolo WebSocket de Ultravox en `client_tool_result.result`.
+ * @param {Record<string, unknown>} parsedResult
+ * @returns {string}
+ */
+function serializeNewStageResult(parsedResult) {
+  let stageBody = parsedResult.body ?? parsedResult.result;
+  if (stageBody === undefined) {
+    const {
+      responseType: _rt,
+      agentReaction: _ar,
+      updateCallState: _ucs,
+      ...rest
+    } = parsedResult;
+    stageBody = rest;
+  }
+  return typeof stageBody === "string" ? stageBody : JSON.stringify(stageBody);
+}
+
+/**
  * Runs a registered disk tool server-side and always attempts an Ultravox tool result envelope.
  * @param {object} opts
  * @param {WebSocket|null} opts.ultravoxWebSocket
@@ -255,11 +282,9 @@ async function executeToolAndSendUltravoxResult(opts) {
   } = opts;
 
   const handler = tryGetToolHandler(toolName);
-  if (
-    !handler ||
-    !ultravoxWebSocket ||
-    ultravoxWebSocket.readyState !== WebSocket.OPEN
-  ) {
+  const isSocketOpen = ultravoxWebSocket?.readyState === WebSocket.OPEN;
+
+  if (!handler || !isSocketOpen) {
     sendClientJson(clientWs, {
       type: "tool_invocation",
       ...(channel === "data_connection" ? { source: "data_connection" } : {}),
@@ -276,20 +301,44 @@ async function executeToolAndSendUltravoxResult(opts) {
       : "client_tool_result";
 
   try {
-    const resultContent = await promiseWithTimeout(
-      handler(sessionUuid, parameters),
+    const rawResult = await promiseWithTimeout(
+      handler(sessionUuid, parameters, clientWs?.meta || {}),
       AVR_TOOL_EXECUTION_TIMEOUT_MS,
       toolName
     );
-    const resultStr =
-      typeof resultContent === "string"
-        ? resultContent
-        : JSON.stringify(resultContent);
-    sendUltravoxJson(ultravoxWebSocket, {
+
+    const parsedResult = parseToolResult(rawResult);
+    const isNewStage = parsedResult?.responseType === "new-stage";
+
+    const payload = {
       type: resultMessageType,
       invocationId,
-      result: resultStr,
-    });
+      ...(isNewStage
+        ? {
+            responseType: "new-stage",
+            result: serializeNewStageResult(parsedResult),
+            ...(parsedResult.agentReaction && {
+              agentReaction: parsedResult.agentReaction,
+            }),
+            ...(parsedResult.updateCallState !== undefined && {
+              updateCallState: parsedResult.updateCallState,
+            }),
+          }
+        : {
+            result:
+              typeof parsedResult?.result === "string"
+                ? parsedResult.result
+                : typeof rawResult === "string"
+                  ? rawResult
+                  : JSON.stringify(rawResult),
+            ...(parsedResult?.agentReaction && {
+              agentReaction: parsedResult.agentReaction,
+            }),
+          }),
+    };
+
+    sendUltravoxJson(ultravoxWebSocket, payload);
+
     sendClientJson(clientWs, {
       type: "tool_invocation",
       ...(channel === "data_connection" ? { source: "data_connection" } : {}),
@@ -309,31 +358,6 @@ async function executeToolAndSendUltravoxResult(opts) {
   }
 }
 
-async function getSettings(agentId, callId) {
-
-  try {
-     const response = await axios.get(`${ELOKIA_BASE_URL}/init`, {
-       headers: {
-          "Accept": "application/json",
-          "X-Agent-Id": agentId,
-          "X-Call-Id": callId,
-        }
-      });
-
-      return mapSettings(response.data);
-
-    } catch (error) {
-      if (error.response) {
-        console.error("Error HTTP:", error.response.status);
-        console.error("Detalle:", error.response.data);
-      } else {
-        console.error("Error conectando:", error.message);
-      }
-    }
-
-}
-
-
 // Configuration for call type
 const CALL_TYPE = process.env.ULTRAVOX_CALL_TYPE || 'agent'; // 'agent' or 'generic'
 const ULTRAVOX_AGENT_ID = process.env.ULTRAVOX_AGENT_ID;
@@ -344,9 +368,14 @@ if (CALL_TYPE === 'agent' && !ULTRAVOX_AGENT_ID) {
 }
 
 // Get the configurable Ultravox sample rate
-const ULTRAVOX_SAMPLE_RATE = 8000;
-const ULTRAVOX_CLIENT_BUFFER_SIZE_MS =
-  process.env.ULTRAVOX_CLIENT_BUFFER_SIZE_MS || 60;
+const ULTRAVOX_SAMPLE_RATE = parseInt(
+  process.env.ULTRAVOX_SAMPLE_RATE || "8000",
+  10
+);
+const ULTRAVOX_CLIENT_BUFFER_SIZE_MS = parseInt(
+  process.env.ULTRAVOX_CLIENT_BUFFER_SIZE_MS || "60",
+  10
+);
 
 // API URLs based on call type
 const getApiUrl = () => {
@@ -362,7 +391,7 @@ const getApiUrl = () => {
  * @param {string} uuid - The unique identifier for the call
  * @returns {Promise<WebSocket>} The WebSocket connection to Ultravox
  */
-async function connectToUltravox(uuid, params) {
+async function connectToUltravox(uuid, params = {}) {
   const apiUrl = getApiUrl();
   console.log(
     `Connecting to Ultravox API (${CALL_TYPE} call)`,
@@ -371,9 +400,9 @@ async function connectToUltravox(uuid, params) {
     ULTRAVOX_CLIENT_BUFFER_SIZE_MS
   );
 
-  console.log(params)
+  console.log(params);
 
-  // Prepare the request body based on call typeo
+  // Prepare the request body based on call type
 
   let requestBody;
   
@@ -399,12 +428,28 @@ async function connectToUltravox(uuid, params) {
   } else {
     // Generic call configuration
 
+    let dynamicConfig = {};
+    try {
+      dynamicConfig = await getConfig(params?.to, uuid, params);
+    } catch (err) {
+      console.error("Error loading initial agent config:", err.message);
+    }
+
+    const fallbackPrompt = enrichPromptWithDateTime(
+      process.env.ULTRAVOX_SYSTEM_PROMPT || "You are a helpful AI assistant.",
+      {},
+      params || {}
+    );
+
     requestBody = {
-      systemPrompt: process.env.ULTRAVOX_SYSTEM_PROMPT || "You are a helpful AI assistant.",
+      systemPrompt: fallbackPrompt,
       temperature: parseFloat(process.env.ULTRAVOX_TEMPERATURE) || 0,
       model: process.env.ULTRAVOX_MODEL || "fixie-ai/ultravox",
       voice: process.env.ULTRAVOX_VOICE || "Shaun",
-      ...await getSettings(params.to, uuid),
+      ...(process.env.ULTRAVOX_LANGUAGE_HINT
+        ? { languageHint: process.env.ULTRAVOX_LANGUAGE_HINT }
+        : {}),
+      ...dynamicConfig,
       metadata: {
         uuid: uuid,
       },
@@ -475,20 +520,97 @@ async function connectToUltravox(uuid, params) {
       requestBody.selectedTools = selectedFromDisk;
     }
 
-    requestBody.vadSettings = {
-        "frameActivationThreshold": 0.3,
-        "minimumTurnDuration": "0.3s",
-        "minimumInterruptionDuration": "0.15s",
-        "turnEndpointDelay": "0.8s"
-    }
-
-    // Add VAD settings if provided
+    // Add VAD settings if provided via .env or /init
     if (process.env.ULTRAVOX_VAD_SETTINGS) {
       try {
-        requestBody.vadSettings = JSON.parse(process.env.ULTRAVOX_VAD_SETTINGS);
+        requestBody.vadSettings = {
+          ...JSON.parse(process.env.ULTRAVOX_VAD_SETTINGS),
+          ...(dynamicConfig.vadSettings &&
+          typeof dynamicConfig.vadSettings === "object"
+            ? dynamicConfig.vadSettings
+            : {}),
+        };
       } catch (error) {
         console.warn("Invalid ULTRAVOX_VAD_SETTINGS JSON format:", error.message);
       }
+    }
+
+    // Add inactivity messages if not already set by /init backend
+    if (typeof requestBody.inactivityMessages === "string") {
+      try {
+        requestBody.inactivityMessages = JSON.parse(
+          requestBody.inactivityMessages
+        );
+      } catch (error) {
+        console.warn(
+          "Invalid inactivityMessages JSON string from API:",
+          error.message
+        );
+        delete requestBody.inactivityMessages;
+      }
+    }
+    if (!Array.isArray(requestBody.inactivityMessages)) {
+      if (process.env.ULTRAVOX_INACTIVITY_MESSAGES) {
+        try {
+          requestBody.inactivityMessages = JSON.parse(
+            process.env.ULTRAVOX_INACTIVITY_MESSAGES
+          );
+        } catch (error) {
+          console.warn(
+            "Invalid ULTRAVOX_INACTIVITY_MESSAGES JSON format:",
+            error.message
+          );
+        }
+      } else {
+        requestBody.inactivityMessages = [
+          {
+            duration: "8s",
+            message: "¿Hola? ¿Sigues ahí? ¿Me escuchas?",
+            endBehavior: "END_BEHAVIOR_UNSPECIFIED",
+          },
+          {
+            duration: "6s",
+            message:
+              "Vaya, parece que no tienes muy buena cobertura ahora mismo o hay ruido en la línea. Si te parece, prueba a llamarnos de nuevo desde un sitio con mejor cobertura o desde otro teléfono para que te podamos atender bien. Muchas gracias por llamar, ¡hasta ahora!",
+            endBehavior: "END_BEHAVIOR_HANG_UP_SOFT",
+          },
+        ];
+      }
+    }
+
+    if (Array.isArray(requestBody.inactivityMessages)) {
+      requestBody.inactivityMessages = requestBody.inactivityMessages.map(
+        (item) => ({
+          ...item,
+          duration:
+            typeof item?.duration === "number"
+              ? `${item.duration}s`
+              : typeof item?.duration === "string" &&
+                  /^\d+(\.\d+)?$/.test(item.duration.trim())
+                ? `${item.duration.trim()}s`
+                : item?.duration,
+        })
+      );
+    }
+
+    // Protect initial greeting from initial WebSocket burst and hands-free echo/noise interruption
+    if (
+      requestBody.firstSpeaker !== "FIRST_SPEAKER_USER" &&
+      !requestBody.firstSpeakerSettings?.user
+    ) {
+      const existingAgentGreeting =
+        requestBody.firstSpeakerSettings?.agent &&
+        typeof requestBody.firstSpeakerSettings.agent === "object"
+          ? requestBody.firstSpeakerSettings.agent
+          : {};
+      requestBody.firstSpeakerSettings = {
+        agent: {
+          uninterruptible: true,
+          delay: process.env.ULTRAVOX_FIRST_SPEAKER_DELAY || "0.5s",
+          ...existingAgentGreeting,
+        },
+      };
+      delete requestBody.firstSpeaker;
     }
   }
 
@@ -529,6 +651,8 @@ const handleClientConnection = (clientWs) => {
   let ultravoxWebSocket = null;
 
   let ultravoxStartTime = null;
+  let greetingStarted = false;
+  let unmuteUserAudioAt = 0;
 
   // Handle client WebSocket messages
   clientWs.on("message", (data) => {
@@ -547,7 +671,14 @@ const handleClientConnection = (clientWs) => {
           // Handle audio data from client
           if (message.audio && ultravoxWebSocket && ultravoxWebSocket.readyState === WebSocket.OPEN) {
             const audioBuffer = Buffer.from(message.audio, "base64");
-            ultravoxWebSocket.send(audioBuffer);
+            const now = Date.now();
+            // Send digital silence while the initial greeting is playing (plus 400ms echo tail)
+            // so hands-free echo or room noise during the greeting isn't queued as a user turn.
+            if (unmuteUserAudioAt === 0 || now < unmuteUserAudioAt) {
+              ultravoxWebSocket.send(Buffer.alloc(audioBuffer.length));
+            } else {
+              ultravoxWebSocket.send(audioBuffer);
+            }
           }
           break;
 
@@ -589,6 +720,12 @@ const handleClientConnection = (clientWs) => {
 
       ultravoxWebSocket.on("open", () => {
         console.log("WebSocket connected to Ultravox");
+        // Safety fallback: unmute after 12s even if agent greeting state was skipped
+        setTimeout(() => {
+          if (unmuteUserAudioAt === 0) {
+            unmuteUserAudioAt = Date.now();
+          }
+        }, 12000);
       });
 
       ultravoxWebSocket.on("message", async (data, isBinary) => {
@@ -620,12 +757,15 @@ const handleClientConnection = (clientWs) => {
 
             case "state":
               console.log("State", message.state);
-              if (message.state === "listening") {
-                clientWs.send(
-                  JSON.stringify({
-                    type: "interruption",
-                  })
-                );
+              if (message.state === "speaking") {
+                greetingStarted = true;
+              } else if (
+                message.state === "listening" &&
+                greetingStarted &&
+                unmuteUserAudioAt === 0
+              ) {
+                // Wait 400ms after greeting ends for Asterisk playback & hands-free echo to clear
+                unmuteUserAudioAt = Date.now() + 400;
               }
               break;
 
@@ -637,21 +777,66 @@ const handleClientConnection = (clientWs) => {
                   }`
                 );
                 // Send transcript to client
-                clientWs.send(
-                  JSON.stringify({
-                    type: "transcript",
+                sendClientJson(clientWs, {
+                  type: "transcript",
+                  role: message.role,
+                  text: message.text,
+                });
+
+                // Conversational Memory: store turn and inject recalled customer memories if returned
+                if (
+                  message.text?.trim() &&
+                  (process.env.API_MEMORY_ENABLED === "true" ||
+                    process.env.AGENT_MEMORY_ENABLED === "true" ||
+                    Boolean(process.env.API_MEMORY_ENDPOINT))
+                ) {
+                  const activeAgentId =
+                    clientWs.meta?.currentAgent || clientWs.meta?.to;
+                  const callerId = clientWs.meta?.from;
+
+                  syncMemory({
+                    callId: sessionUuid,
+                    agentId: activeAgentId,
+                    callerId,
                     role: message.role,
                     text: message.text,
                   })
-                );
+                    .then((memoryContext) => {
+                      if (memoryContext && message.role === "user") {
+                        console.log(
+                          `[Memory] Injecting customer memory for call ${sessionUuid}`
+                        );
+                        sendUltravoxJson(ultravoxWebSocket, {
+                          type: "user_text_message",
+                          text: `[CUSTOMER MEMORY / CONTEXT]\n${memoryContext}`,
+                          urgency:
+                            process.env.API_MEMORY_URGENCY ||
+                            process.env.AGENT_MEMORY_URGENCY ||
+                            "later",
+                        });
+                      }
+                    })
+                    .catch((err) => {
+                      console.error(
+                        "[Memory] Error syncing transcript memory:",
+                        err.message
+                      );
+                    });
+                }
               }
               break;
 
             case "playback_clear_buffer":
               console.log("Playback clear buffer");
+              sendClientJson(clientWs, {
+                type: "interruption",
+              });
               break;
 
             case "client_tool_invocation": {
+              if (message.toolName === "avr_hangup") {
+                unmuteUserAudioAt = Number.MAX_SAFE_INTEGER;
+              }
               await executeToolAndSendUltravoxResult({
                 ultravoxWebSocket,
                 clientWs,
@@ -696,7 +881,17 @@ const handleClientConnection = (clientWs) => {
 
       ultravoxWebSocket.on("close", () => {
         console.log("Ultravox WebSocket connection closed");
-        cleanup();
+        if (sessionUuid && clientWs && clientWs.readyState === WebSocket.OPEN) {
+          const hangupHandler = tryGetToolHandler("avr_hangup");
+          if (hangupHandler) {
+            hangupHandler(sessionUuid, {}).catch((err) =>
+              console.error("Auto-hangup on Ultravox close failed:", err.message)
+            );
+          }
+          setTimeout(cleanup, 5000);
+        } else {
+          cleanup();
+        }
       });
 
       ultravoxWebSocket.on("error", (err) => {
